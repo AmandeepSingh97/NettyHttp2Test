@@ -5,7 +5,15 @@
         </encoder>
     </appender>
 
-    <root level="debug">
-        <appender-ref ref="STDOUT" />
+    <appender name="FILE" class="ch.qos.logback.core.FileAppender">
+        <file> log-ConnectionPool.txt </file>
+        <append>true</append>
+        <encoder>
+            <pattern>%-4relative [%thread] %-5level %logger{35} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="FILE" />
     </root>
 </configuration>
