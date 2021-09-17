@@ -13,6 +13,7 @@ import reactor.netty.http.Http2SslContextSpec;
 import reactor.netty.http.HttpProtocol;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.server.HttpServer;
+import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.transport.logging.AdvancedByteBufFormat;
 import reactor.test.StepVerifier;
 
@@ -39,7 +40,7 @@ public class Http2ClientTests {
             final DisposableServer server = HttpServer.create()
                     .protocol(HttpProtocol.H2)
                     .secure(sslContextSpec -> sslContextSpec.sslContext(serverCtx))
-                    .port(0)
+                    .port(18967)
                     .handle((req, res) -> res.sendString(Mono.just(RESPONSE_STR)))
                     .wiretap(true).bindNow();
             System.out.println("Reactor Netty started on " + server.port());
@@ -50,9 +51,18 @@ public class Http2ClientTests {
     }
 
     @Test(dataProvider = "numberOfCalls")
-    public void testHttp2ClientParallelCalls(int n, int delay) throws FileNotFoundException {
+    public void testHttp2ClientParallelCalls(int n, int delay) throws FileNotFoundException, InterruptedException {
         emptyFile("log-ConnectionPool.txt");
-        HttpClient client = getHttp2Client();
+        HttpClient client = getHttp2Client(100);
+        performNParallelCalls(client, n);
+        int connections = getNumEvents("log-ConnectionPool.txt", "CONNECT:");
+        System.out.println("Connections observed in doing " + n +" parallel calls is: " + connections);
+    }
+
+    @Test(dataProvider = "numberOfCalls")
+    public void testHttp2ClientParallelCallsWithLimitedMaxConnections(int n, int delay) throws FileNotFoundException, InterruptedException {
+        emptyFile("log-ConnectionPool.txt");
+        HttpClient client = getHttp2Client(5);
         performNParallelCalls(client, n);
         int connections = getNumEvents("log-ConnectionPool.txt", "CONNECT:");
         System.out.println("Connections observed in doing " + n +" parallel calls is: " + connections);
@@ -62,19 +72,23 @@ public class Http2ClientTests {
     public void testHttp2ClientSequentialCalls(int n, int delay) throws FileNotFoundException {
 
         emptyFile("log-ConnectionPool.txt");
-        HttpClient client = getHttp2Client();
+        HttpClient client = getHttp2Client(2);
         performNSequentialCalls(client, n, delay);
         int connections = getNumEvents("log-ConnectionPool.txt", "CONNECT:");
         System.out.println("Connections observed in doing " + n +" sequential calls with delay " + delay + " is: " + connections);
     }
 
 
-    private HttpClient getHttp2Client() {
+    private HttpClient getHttp2Client(int maxConnections) {
+        ConnectionProvider provider = ConnectionProvider.builder("MyTestPool")
+                .maxConnections(maxConnections)
+                .build();
+
         Http2SslContextSpec clientCtx =
                 Http2SslContextSpec.forClient()
                         .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 
-        final HttpClient client =  HttpClient.create()
+        final HttpClient client =  HttpClient.create(provider)
                 .secure(sslContextSpec -> sslContextSpec.sslContext(clientCtx))
                 .protocol(HttpProtocol.H2)
                 .wiretap("http2PoolTest", LogLevel.INFO, AdvancedByteBufFormat.HEX_DUMP);;
@@ -84,7 +98,6 @@ public class Http2ClientTests {
     private List<String> performNParallelCalls(HttpClient httpClient, int n) {
         return Flux.range(0, n)
                 .parallel()
-//                .runOn(Schedulers.parallel())
                 .flatMap(item -> getServerHello(httpClient))
                 .sequential()
                 .collectList()
@@ -131,7 +144,7 @@ public class Http2ClientTests {
     @DataProvider(name = "numberOfCalls")
     public Object[][] numberOfCallsWithDelay() {
         return new Object[][] {
-                { 5 , 10},
+                { 50 , 10},
                 { 10, 10},
                 { 20, 10},
                 { 50, 10}
