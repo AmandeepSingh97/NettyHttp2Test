@@ -49,14 +49,25 @@ public class Http2ClientTests {
         }
     }
 
-    @Test(dataProvider = "parallelTests")
-    public void testHttp2ClientParallelCalls(int n) throws FileNotFoundException {
+    @Test(dataProvider = "numberOfCalls")
+    public void testHttp2ClientParallelCalls(int n, int delay) throws FileNotFoundException {
         emptyFile("log-ConnectionPool.txt");
-        final HttpClient client = getHttp2Client();
+        HttpClient client = getHttp2Client();
         performNParallelCalls(client, n);
         int connections = getNumEvents("log-ConnectionPool.txt", "CONNECT:");
-        System.out.println("Connections observed in doing " + n +" calls is: " + connections);
+        System.out.println("Connections observed in doing " + n +" parallel calls is: " + connections);
     }
+
+    @Test(dataProvider = "numberOfCalls")
+    public void testHttp2ClientSequentialCalls(int n, int delay) throws FileNotFoundException {
+
+        emptyFile("log-ConnectionPool.txt");
+        HttpClient client = getHttp2Client();
+        performNSequentialCalls(client, n, delay);
+        int connections = getNumEvents("log-ConnectionPool.txt", "CONNECT:");
+        System.out.println("Connections observed in doing " + n +" sequential calls with delay " + delay + " is: " + connections);
+    }
+
 
     private HttpClient getHttp2Client() {
         Http2SslContextSpec clientCtx =
@@ -73,7 +84,7 @@ public class Http2ClientTests {
     private List<String> performNParallelCalls(HttpClient httpClient, int n) {
         return Flux.range(0, n)
                 .parallel()
-                .runOn(Schedulers.parallel())
+//                .runOn(Schedulers.parallel())
                 .flatMap(item -> getServerHello(httpClient))
                 .sequential()
                 .collectList()
@@ -117,14 +128,13 @@ public class Http2ClientTests {
         writer.close();
     }
 
-    @DataProvider(name = "parallelTests")
-    public Object[][] parallelTests() {
+    @DataProvider(name = "numberOfCalls")
+    public Object[][] numberOfCallsWithDelay() {
         return new Object[][] {
-                { 5 },
-                { 10 },
-                { 20 },
-                { 50 },
-                { 200 }
+                { 5 , 10},
+                { 10, 10},
+                { 20, 10},
+                { 50, 10}
         };
     }
 }
