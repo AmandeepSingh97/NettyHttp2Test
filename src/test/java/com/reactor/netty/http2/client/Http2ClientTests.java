@@ -24,6 +24,8 @@ import java.security.cert.CertificateException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Scanner;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class Http2ClientTests {
 
@@ -38,10 +40,28 @@ public class Http2ClientTests {
             final Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
 
             final DisposableServer server = HttpServer.create()
-                    .protocol(HttpProtocol.H2)
+                    .route(routes ->
+                            routes.get("/conn", (req, resp) -> {
+                                final AtomicReference<String> id = new AtomicReference<>();
+                                final CountDownLatch latch = new CountDownLatch(1);
+                                resp.withConnection(conn -> {
+                                    id.set(conn.channel().id().asShortText());
+                                    System.out.println("Serving with conn id: " + id.get());
+                                    latch.countDown();
+                                });
+                                try {
+                                    latch.await();
+                                    return resp
+                                            .addHeader("Content-Type", "text/plain")
+                                            .sendString(Mono.just(id.get()));
+                                } catch (final Exception e) {
+                                    return resp.sendString(Mono.error(e));
+                                }
+                            })
+                    )
+                    .protocol(HttpProtocol.H2, HttpProtocol.HTTP11)
                     .secure(sslContextSpec -> sslContextSpec.sslContext(serverCtx))
                     .port(18967)
-                    .handle((req, res) -> res.sendString(Mono.just(RESPONSE_STR)))
                     .wiretap(true).bindNow();
             System.out.println("Reactor Netty started on " + server.port());
             return server;
@@ -53,7 +73,7 @@ public class Http2ClientTests {
     @Test(dataProvider = "numberOfCalls")
     public void testHttp2ClientParallelCalls(int n, int delay) throws FileNotFoundException, InterruptedException {
         emptyFile("log-ConnectionPool.txt");
-        HttpClient client = getHttp2Client(100);
+        HttpClient client = getHttp2Client(1, Duration.ofMillis(1), false);
         performNParallelCalls(client, n);
         int connections = getNumEvents("log-ConnectionPool.txt", "CONNECT:");
         System.out.println("Connections observed in doing " + n +" parallel calls is: " + connections);
@@ -62,7 +82,7 @@ public class Http2ClientTests {
     @Test(dataProvider = "numberOfCalls")
     public void testHttp2ClientParallelCallsWithLimitedMaxConnections(int n, int delay) throws FileNotFoundException, InterruptedException {
         emptyFile("log-ConnectionPool.txt");
-        HttpClient client = getHttp2Client(5);
+        HttpClient client = getHttp2Client(5, Duration.ofMillis(1000), false);
         performNParallelCalls(client, n);
         int connections = getNumEvents("log-ConnectionPool.txt", "CONNECT:");
         System.out.println("Connections observed in doing " + n +" parallel calls is: " + connections);
@@ -72,15 +92,16 @@ public class Http2ClientTests {
     public void testHttp2ClientSequentialCalls(int n, int delay) throws FileNotFoundException {
 
         emptyFile("log-ConnectionPool.txt");
-        HttpClient client = getHttp2Client(2);
+        HttpClient client = getHttp2Client(1, Duration.ofMillis(1), false);
         performNSequentialCalls(client, n, delay);
         int connections = getNumEvents("log-ConnectionPool.txt", "CONNECT:");
         System.out.println("Connections observed in doing " + n +" sequential calls with delay " + delay + " is: " + connections);
     }
 
 
-    private HttpClient getHttp2Client(int maxConnections) {
+    private HttpClient getHttp2Client(int maxConnections, Duration maxLifeTime, boolean useHTTP1) {
         ConnectionProvider provider = ConnectionProvider.builder("MyTestPool")
+                .maxLifeTime(maxLifeTime)
                 .maxConnections(maxConnections)
                 .build();
 
@@ -90,7 +111,7 @@ public class Http2ClientTests {
 
         final HttpClient client =  HttpClient.create(provider)
                 .secure(sslContextSpec -> sslContextSpec.sslContext(clientCtx))
-                .protocol(HttpProtocol.H2)
+                .protocol(useHTTP1 ? HttpProtocol.HTTP11 : HttpProtocol.H2)
                 .wiretap("http2PoolTest", LogLevel.INFO, AdvancedByteBufFormat.HEX_DUMP);;
         return client;
     }
@@ -115,7 +136,7 @@ public class Http2ClientTests {
     private Mono<String> getServerHello(HttpClient httpClient) {
         return httpClient
                 .get()
-                .uri("https://localhost:" + http2Server.port())
+                .uri("https://localhost:" + http2Server.port()+"/conn")
                 .responseContent()
                 .aggregate()
                 .asString();
@@ -144,10 +165,11 @@ public class Http2ClientTests {
     @DataProvider(name = "numberOfCalls")
     public Object[][] numberOfCallsWithDelay() {
         return new Object[][] {
-                { 50 , 10},
-                { 10, 10},
+                { 5 , 10},
+                { 10, 5},
                 { 20, 10},
-                { 50, 10}
+                { 50, 10},
+                { 5000, 10}
         };
     }
 }
